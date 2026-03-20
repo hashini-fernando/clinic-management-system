@@ -1,10 +1,7 @@
 package main
 
 import (
-	"bytes"
-	"io"
 	"log"
-	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -17,99 +14,123 @@ import (
 )
 
 func main() {
-	// Load config
 	cfg := config.Load()
 
-	// Connect to DB
 	database, err := db.Connect(cfg)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Fatal("Failed to connect to database:", err)
 	}
 	defer database.Close()
 
-	// Init services
 	openaiService := services.NewOpenAIService(cfg.OpenAIKey)
 
-	// Init handlers
-	patientHandler := handlers.NewPatientHandler(database)
-	visitHandler := handlers.NewVisitHandler(database, openaiService)
-	billingHandler := handlers.NewBillingHandler(database)
+	authHandler     := handlers.NewAuthHandler(database)
+	patientHandler  := handlers.NewPatientHandler(database)
+	visitHandler    := handlers.NewVisitHandler(database, openaiService)
+	billingHandler  := handlers.NewBillingHandler(database)
 	accuracyHandler := handlers.NewAccuracyHandler(database)
-	// Setup router
+	userHandler		:= handlers.NewUserHandler(database)
+
 	r := gin.Default()
 
-	// Global middleware
-	r.Use(middleware.ErrorHandler())
-	r.NoRoute(middleware.NotFound())
-
-	// CORS — must be before routes
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:5173"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Content-Type", "Authorization"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 	}))
 
-	// bodyPreserver is a helper that reads body
-	// and puts it back so middleware AND handler can both read it
-	bodyPreserver := func(c *gin.Context) {
-		// Read the body
-		body, err := io.ReadAll(c.Request.Body)
-		if err != nil {
-			c.JSON(400, gin.H{"error": "Failed to read request"})
-			c.Abort()
-			return
-		}
-
-		// Put body back for next reader
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
-
-		// Store body in context so middleware can use it
-		c.Set("rawBody", body)
-
-		c.Next()
-
-		// Put body back AGAIN for handler
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
-	}
-
-	// Health check
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok"})
-	})
-
-	// API routes
 	api := r.Group("/api")
+
+	// ── Public ─────────────────────────────────────
+	api.POST("/auth/login", authHandler.Login)
+
+	// ── Protected ──────────────────────────────────
+	protected := api.Group("/")
+	protected.Use(middleware.AuthMiddleware())
 	{
-		// Patient routes
-		api.POST("/patients",
-			bodyPreserver,
-			middleware.ValidateCreatePatient(),
+		// Auth
+		protected.GET("auth/me", authHandler.GetMe)
+
+		// ── Patients ──
+		protected.GET("patients",     patientHandler.GetAllPatients)
+		protected.GET("patients/:id", patientHandler.GetPatient)
+		protected.POST("patients",
+			middleware.RequireRole("staff", "admin"),
 			patientHandler.CreatePatient,
 		)
-		api.GET("/patients", patientHandler.GetAllPatients)
-		api.GET("/patients/:id", patientHandler.GetPatient)
-		api.GET("/patients/:id/visits", visitHandler.GetPatientVisits)
 
-		// Visit routes — with rate limit and validation
-		api.POST("/visits/parse",
-			bodyPreserver,
-			middleware.RateLimit(10, time.Minute),
-			middleware.ValidateParseRequest(),
+		// ── Visits ──
+		// IMPORTANT: static routes must come BEFORE param routes
+		// visits/parse, visits/all, visits/unconfirmed must be
+		// registered before visits/:id otherwise Gin matches "all"
+		// as the :id param
+
+		// Static visit routes first
+		protected.POST("visits/parse",
+			middleware.RequireRole("doctor", "admin"),
 			visitHandler.ParseAndSaveVisit,
 		)
-		api.GET("/visits/:id", visitHandler.GetVisit)
-		api.POST("/visits/:id/confirm", visitHandler.ConfirmVisit)
+		protected.GET("visits/all",
+			middleware.RequireRole("admin"),
+			visitHandler.GetAllVisits,
+		)
+		protected.GET("visits/unconfirmed",
+			middleware.RequireRole("staff", "admin"),
+			visitHandler.GetUnconfirmedVisits,
+		)
 
-		// Billing routes
-		api.GET("/billing/:visit_id", billingHandler.GetBilling)
-		api.POST("/billing/:visit_id/pay", billingHandler.MarkAsPaid)
+		// Param routes after
+		protected.GET("visits/:id",          visitHandler.GetVisit)
+		protected.POST("visits/:id/confirm",
+			middleware.RequireRole("doctor", "admin"),
+			visitHandler.ConfirmVisit,
+		)
+
+		// Patient visits
+		protected.GET("patients/:id/visits", visitHandler.GetPatientVisits)
+
+		// ── Billing ──
+		protected.GET("billing/:visit_id", billingHandler.GetBilling)
+		protected.POST("billing/:visit_id/pay",
+			middleware.RequireRole("staff", "admin"),
+			billingHandler.MarkAsPaid,
+		)
+
+		// ── Accuracy ──
+		protected.GET("accuracy/stats",
+			middleware.RequireRole("doctor", "admin"),
+			accuracyHandler.GetAccuracyStats,
+		)
+		protected.GET("accuracy/prf",
+			middleware.RequireRole("doctor", "admin"),
+			accuracyHandler.GetPRFStats,
+		)
+		protected.GET("accuracy/confidence",
+			middleware.RequireRole("doctor", "admin"),
+			accuracyHandler.GetConfidenceStats,
+		)
+
+		// user creation and management routes — admin only
+		protected.GET("users",
+			middleware.RequireRole("admin"),
+			userHandler.GetUsers,
+		)
+		protected.POST("users",
+			middleware.RequireRole("admin"),
+			userHandler.CreateUser,
+		)
+		protected.PUT("users/:id/toggle",
+			middleware.RequireRole("admin"),
+			userHandler.ToggleUserStatus,
+		)
+		protected.PUT("users/:id/password",
+			middleware.RequireRole("admin"),
+			userHandler.ResetPassword,
+		)
 	}
 
-	// Accuracy routes
-	api.GET("/accuracy/stats",      accuracyHandler.GetAccuracyStats)
-	api.GET("/accuracy/prf",        accuracyHandler.GetPRFStats)
-	api.GET("/accuracy/confidence", accuracyHandler.GetConfidenceStats)
-	log.Printf("Server running on port %s", cfg.Port)
+	log.Println("Server running on port", cfg.Port)
 	r.Run(":" + cfg.Port)
 }

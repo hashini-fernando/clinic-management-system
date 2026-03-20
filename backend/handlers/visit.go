@@ -283,10 +283,10 @@ func (h *VisitHandler) ConfirmVisit(c *gin.Context) {
 		log.Printf("ai_summary update error: %v", updateErr)
 	}
 
-	// ── Update visit status ──
+	// ── Update visit status ── ( which goes to receptionist queue)
 	h.db.Exec(`
 		UPDATE visits SET
-			status     = 'confirmed',
+			status     = 'unconfirmed', 
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1`, visitID)
 
@@ -451,6 +451,93 @@ func (h *VisitHandler) GetPatientVisits(c *gin.Context) {
 
 	if visits == nil {
 		visits = []models.Visit{}
+	}
+
+	c.JSON(http.StatusOK, visits)
+}
+
+
+// GetUnconfirmedVisits - GET /api/visits/unconfirmed
+func (h *VisitHandler) GetUnconfirmedVisits(c *gin.Context) {
+    rows, err := h.db.Query(`
+        SELECT
+            v.id, v.patient_id, v.visit_date, v.status,
+            p.name AS patient_name, p.phone
+        FROM visits v
+        JOIN patients p ON p.id = v.patient_id
+        WHERE v.status = 'unconfirmed'
+        ORDER BY v.visit_date DESC`)
+
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch visits"})
+        return
+    }
+    defer rows.Close()
+
+    type UnconfirmedVisit struct {
+        ID          int    `json:"id"`
+        PatientID   int    `json:"patient_id"`
+        PatientName string `json:"patient_name"`
+        Phone       string `json:"phone"`
+        VisitDate   string `json:"visit_date"`
+        Status      string `json:"status"`
+    }
+
+    var visits []UnconfirmedVisit
+    for rows.Next() {
+        var v UnconfirmedVisit
+        rows.Scan(&v.ID, &v.PatientID, &v.VisitDate,
+            &v.Status, &v.PatientName, &v.Phone)
+        visits = append(visits, v)
+    }
+
+    if visits == nil {
+        visits = []UnconfirmedVisit{}
+    }
+
+    c.JSON(http.StatusOK, visits)
+}
+
+// GetAllVisits - GET /api/visits/all
+// Admin only - returns all visits with patient name
+func (h *VisitHandler) GetAllVisits(c *gin.Context) {
+	rows, err := h.db.Query(`
+		SELECT
+			v.id, v.patient_id, v.visit_date, v.status,
+			p.name AS patient_name
+		FROM visits v
+		JOIN patients p ON p.id = v.patient_id
+		ORDER BY v.visit_date DESC`)
+
+	if err != nil {
+		log.Printf("GetAllVisits error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to fetch visits",
+		})
+		return
+	}
+	defer rows.Close()
+
+	type VisitRow struct {
+		ID          int    `json:"id"`
+		PatientID   int    `json:"patient_id"`
+		PatientName string `json:"patient_name"`
+		VisitDate   string `json:"visit_date"`
+		Status      string `json:"status"`
+	}
+
+	var visits []VisitRow
+	for rows.Next() {
+		var v VisitRow
+		rows.Scan(
+			&v.ID, &v.PatientID, &v.VisitDate,
+			&v.Status, &v.PatientName,
+		)
+		visits = append(visits, v)
+	}
+
+	if visits == nil {
+		visits = []VisitRow{}
 	}
 
 	c.JSON(http.StatusOK, visits)

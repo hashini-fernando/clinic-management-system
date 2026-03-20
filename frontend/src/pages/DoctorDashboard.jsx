@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getPatients } from '../services/api'
-import { getUser, hasRole } from '../services/auth'
+import { getUser } from '../services/auth'
 import toast from 'react-hot-toast'
 
-export default function Dashboard() {
+export default function DoctorDashboard() {
   const [patients, setPatients] = useState([])
   const [loading, setLoading]   = useState(true)
   const [search, setSearch]     = useState('')
@@ -23,46 +23,13 @@ export default function Dashboard() {
     p.phone?.includes(search)
   )
 
-  const roleBanner = {
-    doctor: { text: 'Doctor — click New Visit to start a consultation', bg: '#eff6ff', border: '#bfdbfe', color: '#1d4ed8' },
-    staff:  { text: 'Staff — register patients and manage billing',     bg: '#f0f9ff', border: '#bae6fd', color: '#0369a1' },
-    admin:  { text: 'Admin — full access to all features',              bg: '#f0fdf4', border: '#bbf7d0', color: '#15803d' },
-  }
-
-  const banner = roleBanner[user?.role] || roleBanner.staff
-
   return (
     <div className="page">
-
       <div className="page-header">
         <div>
-          <h1 className="page-title">Patient Management</h1>
-          <p className="page-subtitle">Welcome back, {user?.name}</p>
+          <h1 className="page-title">Doctor Dashboard</h1>
+          <p className="page-subtitle">Welcome, {user?.name}</p>
         </div>
-        {hasRole('staff', 'admin') && (
-          <button
-            className="btn btn-primary btn-lg"
-            onClick={() => navigate('/patients/new')}
-          >
-            + New Patient
-          </button>
-        )}
-      </div>
-
-      {/* Role banner */}
-      <div style={{
-        padding: '12px 16px',
-        borderRadius: 'var(--radius-md)',
-        marginBottom: '20px',
-        fontSize: '13px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '10px',
-        background: banner.bg,
-        border: `1px solid ${banner.border}`,
-        color: banner.color
-      }}>
-        <div style={{ fontWeight: 600 }}>{banner.text}</div>
       </div>
 
       {/* Stats */}
@@ -74,36 +41,32 @@ export default function Dashboard() {
           <div className="stat-label">Total Patients</div>
         </div>
         <div className="stat-card">
-          <div className="stat-value" style={{ color: '#2563eb' }}>
-            {patients.filter(p => p.gender === 'male').length}
-          </div>
-          <div className="stat-label">Male</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-value" style={{ color: '#be185d' }}>
-            {patients.filter(p => p.gender === 'female').length}
-          </div>
-          <div className="stat-label">Female</div>
-        </div>
-        <div className="stat-card">
           <div className="stat-value" style={{ color: 'var(--success)' }}>
             {patients.filter(p =>
               new Date(p.created_at).toDateString() === new Date().toDateString()
             ).length}
           </div>
-          <div className="stat-label">Today</div>
+          <div className="stat-label">New Today</div>
         </div>
       </div>
 
-      {/* Patient table */}
+      {/* Patient search and list */}
       <div className="card" style={{ padding: 0 }}>
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--gray-100)' }}>
+        <div style={{
+          padding: '16px 20px',
+          borderBottom: '1px solid var(--gray-100)',
+          display: 'flex', alignItems: 'center',
+          justifyContent: 'space-between'
+        }}>
+          <h2 style={{ margin: 0, border: 'none', paddingBottom: 0 }}>
+            Select Patient to Start Visit
+          </h2>
           <input
             className="form-input"
             placeholder="Search by name or phone..."
             value={search}
             onChange={e => setSearch(e.target.value)}
-            style={{ maxWidth: '360px' }}
+            style={{ maxWidth: '280px' }}
           />
         </div>
 
@@ -115,11 +78,6 @@ export default function Dashboard() {
           <div className="empty-state">
             <div className="empty-state-icon">👥</div>
             <div className="empty-state-title">No patients found</div>
-            {hasRole('staff', 'admin') && !search && (
-              <button className="btn btn-primary" onClick={() => navigate('/patients/new')}>
-                + Register First Patient
-              </button>
-            )}
           </div>
         ) : (
           <table className="table">
@@ -136,13 +94,19 @@ export default function Dashboard() {
             <tbody>
               {filtered.map((p, i) => (
                 <tr key={p.id}>
-                  <td style={{ color: 'var(--gray-400)', fontSize: '13px' }}>{i + 1}</td>
+                  <td style={{ color: 'var(--gray-400)', fontSize: '13px' }}>
+                    {i + 1}
+                  </td>
                   <td>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <div className="avatar">{p.name?.charAt(0).toUpperCase()}</div>
+                      <div className="avatar">
+                        {p.name?.charAt(0).toUpperCase()}
+                      </div>
                       <div>
                         <div style={{ fontWeight: 600 }}>{p.name}</div>
-                        <div style={{ fontSize: '12px', color: 'var(--gray-400)' }}>ID #{p.id}</div>
+                        <div style={{ fontSize: '12px', color: 'var(--gray-400)' }}>
+                          ID #{p.id}
+                        </div>
                       </div>
                     </div>
                   </td>
@@ -151,23 +115,17 @@ export default function Dashboard() {
                     <span className={`badge ${
                       p.gender === 'male'   ? 'badge-blue' :
                       p.gender === 'female' ? 'badge-pink' : 'badge-gray'
-                    }`}>
-                      {p.gender}
-                    </span>
+                    }`}>{p.gender}</span>
                   </td>
                   <td>{p.phone || '—'}</td>
                   <td>
                     <div style={{ display: 'flex', gap: '6px' }}>
-                      {/* Doctor + Admin: New Visit */}
-                      {hasRole('doctor', 'admin') && (
-                        <button
-                          className="btn btn-primary btn-sm"
-                          onClick={() => navigate(`/patients/${p.id}/visit`)}
-                        >
-                          New Visit
-                        </button>
-                      )}
-                      {/* All roles: History */}
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={() => navigate(`/patients/${p.id}/visit`)}
+                      >
+                        Start Visit
+                      </button>
                       <button
                         className="btn btn-outline btn-sm"
                         onClick={() => navigate(`/patients/${p.id}/history`)}

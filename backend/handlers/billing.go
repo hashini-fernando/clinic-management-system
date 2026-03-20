@@ -69,8 +69,20 @@ func (h *BillingHandler) MarkAsPaid(c *gin.Context) {
 	visitID := c.Param("visit_id")
 
 	_, err := h.db.Exec(`
-		UPDATE billing SET status = 'paid' 
+		UPDATE billing SET 
+			status = 'paid',
+			payment_status = 'paid' ,
+			paid_at        = CURRENT_TIMESTAMP,
+            updated_at     = CURRENT_TIMESTAMP
 		WHERE visit_id = $1`, visitID)
+
+		// Set visit as completed
+    h.db.Exec(`
+        UPDATE visits SET
+            status     = 'completed',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1`, visitID)
+
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update billing"})

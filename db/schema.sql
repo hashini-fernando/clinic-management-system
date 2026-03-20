@@ -4,24 +4,18 @@
 --
 -- HOW TO USE:
 -- 1. Open pgAdmin
--- 2. Create a new database called: clinic_db
--- 3. Create a user:
+-- 2. Create database: clinic_db
+-- 3. Create user:
 --      CREATE USER clinic_user WITH PASSWORD 'clinic_pass';
+--      GRANT ALL PRIVILEGES ON DATABASE clinic_db TO clinic_user;
 -- 4. Open Query Tool on clinic_db
 -- 5. Paste this entire file and press F5
 -- ============================================================
 
 
 -- ============================================================
--- STEP 1: CREATE USER (run this on postgres database first)
--- ============================================================
--- CREATE USER clinic_user WITH PASSWORD 'clinic_pass';
--- GRANT ALL PRIVILEGES ON DATABASE clinic_db TO clinic_user;
-
-
--- ============================================================
--- STEP 2: TRIGGER FUNCTION
--- Used by all tables to auto-update updated_at column
+-- TRIGGER FUNCTION
+-- Auto updates updated_at on every UPDATE
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION update_updated_at()
@@ -34,12 +28,36 @@ $$ LANGUAGE plpgsql;
 
 
 -- ============================================================
--- STEP 3: CORE TABLES
+-- CORE TABLES
 -- ============================================================
+
+-- ------------------------------------------------------------
+-- TABLE: doctors
+-- Stores ALL clinic staff — doctors, receptionists, admins
+-- Used for authentication and role based access
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS doctors (
+    id             SERIAL       PRIMARY KEY,
+    name           VARCHAR(255) NOT NULL,
+    email          VARCHAR(255) NOT NULL UNIQUE,
+    password_hash  VARCHAR(255) NOT NULL,
+    role           VARCHAR(20)  NOT NULL DEFAULT 'doctor'
+                   CHECK (role IN ('doctor', 'staff', 'admin')),
+    specialization VARCHAR(100),
+    is_active      BOOLEAN      DEFAULT true,
+    created_at     TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    updated_at     TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TRIGGER trg_doctors_updated_at
+    BEFORE UPDATE ON doctors
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
 
 -- ------------------------------------------------------------
 -- TABLE: patients
 -- Stores patient demographic information
+-- Registered by staff/admin
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS patients (
     id         SERIAL       PRIMARY KEY,
@@ -59,29 +77,46 @@ CREATE TRIGGER trg_patients_updated_at
 
 -- ------------------------------------------------------------
 -- TABLE: visits
--- Each row = one clinic visit for a patient
--- raw_input = doctor's original text notes
--- status: pending (AI parsed, not confirmed) | confirmed | cancelled
+-- Each row = one clinic visit
+-- doctor_id links to the doctor who handled the visit
+-- status flow: pending → unconfirmed → completed
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS visits (
     id           SERIAL      PRIMARY KEY,
     patient_id   INTEGER     NOT NULL,
+    doctor_id    INTEGER,
     raw_input    TEXT        NOT NULL,
     visit_date   TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
     doctor_notes TEXT,
     status       VARCHAR(20) DEFAULT 'pending'
-                 CHECK (status IN ('pending', 'confirmed', 'cancelled')),
+                 CHECK (status IN (
+                     'pending',
+                     'unconfirmed',
+                     'completed',
+                     'cancelled'
+                 )),
     created_at   TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
     updated_at   TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT fk_visits_patient
         FOREIGN KEY (patient_id)
         REFERENCES patients(id)
-        ON DELETE CASCADE
+        ON DELETE CASCADE,
+
+    CONSTRAINT fk_visits_doctor
+        FOREIGN KEY (doctor_id)
+        REFERENCES doctors(id)
+        ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_visits_patient_id
     ON visits(patient_id);
+
+CREATE INDEX IF NOT EXISTS idx_visits_doctor_id
+    ON visits(doctor_id);
+
+CREATE INDEX IF NOT EXISTS idx_visits_status
+    ON visits(status);
 
 CREATE TRIGGER trg_visits_updated_at
     BEFORE UPDATE ON visits
@@ -90,10 +125,10 @@ CREATE TRIGGER trg_visits_updated_at
 
 -- ------------------------------------------------------------
 -- TABLE: parsed_items
--- Stores AI classified items from doctor notes
+-- AI classified items from doctor notes
 -- item_type: drug | lab_test | observation
--- confidence: AI certainty score (0.0 to 1.0) - stored for
---             analysis, NOT shown on patient documents
+-- confidence: AI certainty (0.0-1.0) stored for analysis
+--             NOT shown on patient documents
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS parsed_items (
     id          SERIAL       PRIMARY KEY,
@@ -125,8 +160,9 @@ CREATE INDEX IF NOT EXISTS idx_parsed_items_item_type
 
 -- ------------------------------------------------------------
 -- TABLE: billing
--- One billing record per visit (1-to-1 with visits)
+-- One bill per visit (1-to-1 with visits)
 -- status: unpaid | paid | waived
+-- Generated automatically when doctor confirms visit
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS billing (
     id           SERIAL        PRIMARY KEY,
@@ -151,7 +187,7 @@ CREATE TRIGGER trg_billing_updated_at
 
 -- ------------------------------------------------------------
 -- TABLE: billing_items
--- Line items in a bill (consultation fee, drugs, lab tests)
+-- Individual line items in a bill
 -- item_type: consultation | drug | lab_test
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS billing_items (
@@ -177,9 +213,8 @@ CREATE INDEX IF NOT EXISTS idx_billing_items_billing_id
 -- ------------------------------------------------------------
 -- TABLE: ai_summary
 -- Stores AI accuracy metrics per visit
--- Populated when doctor confirms visit (Human-in-the-Loop)
--- Used by AI Accuracy Dashboard
--- One record per visit (1-to-1 with visits)
+-- Populated when doctor confirms (Human-in-the-Loop)
+-- 1-to-1 with visits
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS ai_summary (
     id                    SERIAL       PRIMARY KEY,
@@ -201,7 +236,7 @@ CREATE TABLE IF NOT EXISTS ai_summary (
     obs_accuracy          DECIMAL(5,2) DEFAULT 0,
     overall_accuracy      DECIMAL(5,2) DEFAULT 0,
 
-    -- Multi-label classification metrics (macro averaged)
+    -- Multi-label PRF metrics (macro averaged)
     precision_score       DECIMAL(5,2) DEFAULT 0,
     recall_score          DECIMAL(5,2) DEFAULT 0,
     f1_score              DECIMAL(5,2) DEFAULT 0,
@@ -227,12 +262,12 @@ CREATE TRIGGER trg_ai_summary_updated_at
 
 
 -- ============================================================
--- STEP 4: LOOKUP / REFERENCE TABLES
+-- LOOKUP / REFERENCE TABLES
 -- ============================================================
 
 -- ------------------------------------------------------------
 -- TABLE: drug_price_list
--- Price lookup for drugs used in billing
+-- Drug prices looked up by name during billing
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS drug_price_list (
     id         SERIAL        PRIMARY KEY,
@@ -244,7 +279,7 @@ CREATE TABLE IF NOT EXISTS drug_price_list (
 
 -- ------------------------------------------------------------
 -- TABLE: lab_price_list
--- Price lookup for lab tests used in billing
+-- Lab test prices looked up by name during billing
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS lab_price_list (
     id         SERIAL        PRIMARY KEY,
@@ -256,7 +291,7 @@ CREATE TABLE IF NOT EXISTS lab_price_list (
 
 -- ------------------------------------------------------------
 -- TABLE: consultation_types
--- Stores consultation fee types
+-- Consultation fee types and prices
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS consultation_types (
     id         SERIAL        PRIMARY KEY,
@@ -268,7 +303,7 @@ CREATE TABLE IF NOT EXISTS consultation_types (
 
 -- ------------------------------------------------------------
 -- TABLE: drug_codes
--- Maps brand/common drug names to RXNorm standard codes
+-- Maps brand/common names to RXNorm standard codes
 -- Used during visit confirmation for standardization
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS drug_codes (
@@ -285,7 +320,7 @@ CREATE INDEX IF NOT EXISTS idx_drug_codes_common_name
 
 -- ------------------------------------------------------------
 -- TABLE: icd10_codes
--- Medical diagnosis codes reference table
+-- WHO ICD-10 diagnosis codes reference
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS icd10_codes (
     id          SERIAL      PRIMARY KEY,
@@ -296,23 +331,53 @@ CREATE TABLE IF NOT EXISTS icd10_codes (
 
 
 -- ============================================================
--- STEP 5: GRANT PERMISSIONS TO clinic_user
+-- GRANT PERMISSIONS
 -- ============================================================
 
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO clinic_user;
+GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA public TO clinic_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO clinic_user;
 GRANT USAGE ON SCHEMA public TO clinic_user;
 
 
 -- ============================================================
--- STEP 6: SEED DATA
+-- SEED DATA
 -- ============================================================
 
+-- Demo accounts
+-- Password for ALL accounts: clinic123
+-- Hash: bcrypt cost 10
+INSERT INTO doctors (name, email, password_hash, role, specialization) VALUES
+(
+    'Dr. John Silva',
+    'doctor@clinic.com',
+    '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi',
+    'doctor',
+    'General Practitioner'
+),
+(
+    'Sarah Admin',
+    'admin@clinic.com',
+    '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi',
+    'admin',
+    NULL
+),
+(
+    'Mary Reception',
+    'staff@clinic.com',
+    '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi',
+    'staff',
+    NULL
+)
+ON CONFLICT (email) DO NOTHING;
+
+
+-- Consultation fee
 INSERT INTO consultation_types (name, price) VALUES
     ('General Consultation', 30.00)
 ON CONFLICT (name) DO NOTHING;
 
 
+-- Drug prices
 INSERT INTO drug_price_list (drug_name, unit_price) VALUES
     ('Paracetamol (PCM)',  2.50),
     ('Amoxicillin',        8.00),
@@ -325,10 +390,12 @@ INSERT INTO drug_price_list (drug_name, unit_price) VALUES
     ('Ciprofloxacin',     10.00),
     ('Ibuprofen',          3.50),
     ('Salbutamol',         6.00),
-    ('Insulin Mixtard',   15.00)
+    ('Insulin Mixtard',   15.00),
+    ('Metformin (Glucophage)', 4.00)
 ON CONFLICT (drug_name) DO NOTHING;
 
 
+-- Lab prices
 INSERT INTO lab_price_list (test_name, unit_price) VALUES
     ('CBC',              15.00),
     ('FBC',              15.00),
@@ -349,10 +416,12 @@ INSERT INTO lab_price_list (test_name, unit_price) VALUES
     ('Thyroid Profile',  30.00),
     ('Blood Culture',    40.00),
     ('Urine Culture',    30.00),
-    ('Throat Swab',      20.00)
+    ('Throat Swab',      20.00),
+    ('FBC',              15.00)
 ON CONFLICT (test_name) DO NOTHING;
 
 
+-- Drug codes (brand to RXNorm)
 INSERT INTO drug_codes (common_name, standard_name, rxnorm_code) VALUES
     ('Paracetamol',      'Paracetamol (PCM)', '161'),
     ('PCM',              'Paracetamol (PCM)', '161'),
@@ -373,6 +442,7 @@ INSERT INTO drug_codes (common_name, standard_name, rxnorm_code) VALUES
 ON CONFLICT DO NOTHING;
 
 
+-- ICD10 codes
 INSERT INTO icd10_codes (code, description) VALUES
     ('J06.9', 'Acute upper respiratory infection'),
     ('J18.9', 'Pneumonia'),
@@ -392,7 +462,7 @@ ON CONFLICT (code) DO NOTHING;
 
 
 -- ============================================================
--- VERIFY: Check all tables were created
+-- VERIFY — check all tables created
 -- ============================================================
 
 SELECT table_name

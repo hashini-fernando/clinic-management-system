@@ -1,18 +1,36 @@
 version: '3.8'
-services:
-  postgres:
-    image: postgres:15
-    container_name: clinic_db
-    restart: always
-    environment:
-      POSTGRES_USER: clinic_user
-      POSTGRES_PASSWORD: clinic_pass
-      POSTGRES_DB: clinic_db
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
 
-volumes:
-  pgdata:
+services:
+
+  # ── Go Backend ───────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: clinic_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      PORT:           8000
+      DB_HOST:        ${DB_HOST}
+      DB_PORT:        5432
+      DB_USER:        ${DB_USER}
+      DB_PASSWORD:    ${DB_PASSWORD}
+      DB_NAME:        ${DB_NAME}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      JWT_SECRET:     ${JWT_SECRET}
+
+  # ── React Frontend ───────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: clinic_frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
